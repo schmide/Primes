@@ -15,7 +15,6 @@ public:
    void IndexorInit(I_PRIME sprime = 0)
    {
       dprime = MAPOUT(sprime);
-      //bit = bitbase;
       bit = dprime * dprime;
       dprime <<= 1;
    }

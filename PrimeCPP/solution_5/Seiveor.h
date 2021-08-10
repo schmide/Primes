@@ -98,26 +98,24 @@ int Seiveor<SIEVEOR_ARG>::Sievey(uint64_t maxBit, uint64_t subDivisions)
    S_REPLICATOR *replicators = reinterpret_cast<S_REPLICATOR *>(base + adjOff);
    S_REPLICATOR *replicator = replicators;
    S_WORD stride = ONESHIFT(logS + 3);
-   S_WORD bit = 1; // bits + 1;
    S_WORD bitWordEnd = stride;
    S_WORD bitStart = BITSTART(1);
    adjOff >>= logS;
    S_WORD *wordEnd = word + adjOff;
    adjOff = ONESHIFT(logS + 2);
    S_WORD *replicatorEnd = MINLAM(wordEnd, word + adjOff);
-   S_WORD bitIndex = *word = 1;
+   S_WORD bit = *word = 1;
    S_WORD wordIndex = 0;
    do {
       while (bitStart < bitWordEnd) {
          if (!READBIT(base, bit))
 #ifdef S_NO_NEW
-            replicator++->ReplicatorInit(bitIndex, wordIndex, word);
+            replicator++->ReplicatorInit(bit, wordIndex, word);
 #else
-            new (replicator++) S_REPLICATOR(bitIndex, wordIndex, word);
+            new (replicator++) S_REPLICATOR(bit, wordIndex, word);
 #endif 
-         bitIndex++;
-         bitStart = BITSTART(bitIndex);
          bit++;
+         bitStart = BITSTART(bit);
       }
 #ifdef PRIMEBUCKETS
       primeBuckets.AddBucket(*word, wordIndex << 6);
@@ -154,18 +152,16 @@ int Seiveor<SIEVEOR_ARG>::Sievey(uint64_t maxBit, uint64_t subDivisions)
          while (bitStart < bitRun) {
             if (!READBIT(base, bit))
 #ifdef S_NO_NEW
-               indexor++->IndexorInit(bit); // s, bitIndex);
+               indexor++->IndexorInit(bit); 
 #else
-               new (indexor++) S_INDEXOR(bit); // s, bitIndex);
+               new (indexor++) S_INDEXOR(bit); 
 #endif 
-            bitIndex++;
-            bitStart = BITSTART(bitIndex);
             bit++;
+            bitStart = BITSTART(bit);
             S_INDEXOR *index = indexors;
             while (index < indexor)
                index++->Update(base);
          }
-         // bitRun += bits;
          S_INDEXOR *index = indexors;
          do {
             index++->UpdateTo(base, bitRun);
@@ -233,7 +229,7 @@ void Seiveor<SIEVEOR_ARG>::printResults(uint64_t maxBit, bool showResults, doubl
 
    // Following 2 lines added by rbergen to conform to drag race output format
    printf("\n");
-   printf("schmide;%d;%f;1;algorithm=base,faithful=yes,bits=1\n", passes, duration);
+   printf("schmide;%d;%f;1;algorithm=base,faithful=no,bits=1\n", passes, duration);
 }
 
 template<SIEVEOR_TYPE>
