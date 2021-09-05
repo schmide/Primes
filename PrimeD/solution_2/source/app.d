@@ -26,7 +26,7 @@ if(SieveSize > 0) // We can attach constraints onto templated things that must s
     // share most of their functionality.
     //
     // This is explained more at the actual definition of `CommonSieveFunctions`, which is defined after this class.
-    mixin CommonSieveFunctions;
+    mixin CommonSieveFunctions!8;
 
     // You can apply qualifiers and attributes in a block, kind of like `public:` from C/C++, 
     // but less annoying.
@@ -35,7 +35,7 @@ if(SieveSize > 0) // We can attach constraints onto templated things that must s
         // Because SieveSize is a templated value, we know what it is at compile-time, so can stack allocate here.
         // Most D functions can be ran at compile-time. This is called Compile Time Function Execution (CTFE).
         // `alignTo` is being used in CTFE here.
-        ubyte[alignTo!8(SieveSize) / 8] _bits = ubyte.max;
+        ubyte[alignTo!8(SieveSize) / 8] _bits;
     }
 
     // We'll use this helper func at compile-time to ensure that the user passes
@@ -96,7 +96,7 @@ if(SieveSize > 0) // We can attach constraints onto templated things that must s
 // to shoe-horn as many of D's cool features as I could.
 //
 // Mixin templates have some pretty cool uses, but this is one of the simpler ways to use them.
-mixin template CommonSieveFunctions()
+mixin template CommonSieveFunctions(size_t bitSize)
 {   
     // D allows nesting imports into _any_ scope, in order to avoid symbol pollution, and
     // it also allows D to write more "file-portable" code.
@@ -112,12 +112,12 @@ mixin template CommonSieveFunctions()
     {
         // Fairly standard bitty stuff.
         assert(index % 2 == 1, "Index is even?");
-        return (this._bits[index / 8] & (1 << (index % 8))) != 0;
+        return (this._bits[index / bitSize] & (1UL << (index % bitSize))) != 0;
     }
 
-    private void clearBit(size_t index) @nogc nothrow
+    private void setBit(size_t index) @nogc nothrow
     {
-        this._bits[index / 8] &= ~(1 << (index % 8));
+        this._bits[index / bitSize] |= 1UL << (index % bitSize);
     }
 
     private size_t countPrimes() nothrow inout
@@ -140,7 +140,7 @@ mixin template CommonSieveFunctions()
         // Then:
         //  Evalulate all values of the pipeline, and find the sum of all the mapped results.
         return iota(3, SieveSize, 2)
-                .map!(num => this.getBit(num) ? 1 : 0) // Ternary operator is just to make it more clear, not actually needed.
+                .map!(num => this.getBit(num) ? 0 : 1) // Ternary operator is just to make it more clear, not actually needed.
                 .sum + 1; // + 1 is to account for '2' being a special case.
     }
 }
@@ -158,12 +158,11 @@ mixin template RunSieve()
         // We can also selectively specify which symbols from a package we want to import.
         // It's good practice to do so (less symbol bloat), but it's also super tedious.
         import std.algorithm : each;
-        import std.conv      : to;
         import std.math      : sqrt, round;
         import std.range     : iota;
 
         // Something to note about the below code:
-        //      We're using the `to` function from `std.conv` using member function syntax?
+        //      We're using the `sqrt` function from `std.math` using member function syntax?
         //      That's because D has a concept called UFCS (Uniform Function Call Syntax)
         //      Most function calls written as `func(a, b, c)` can be written as `a.func(b, c)`.
         //
@@ -171,28 +170,40 @@ mixin template RunSieve()
         // If there's only one template parameter, then you can usually use the form `!templateP(runtimeP1, runtimeP2)`
         //
         // Also, also, if a function doesn't need any runtime parameters, you can just completely omit the parenthesis:
-        //  `.to!int` and `.to!int()` are exactly the same.
+        //  `.sqrt()` and `.sqrt` are exactly the same.
+        //
+        // Normally one would use `std.conv.to` to do casting, e.g. `sqrt(123).to!size_t` but it was generating
+        // inefficient ASM, so I'm now using raw casts.
 
         auto factor = 3UL;
-        const q = sqrt(SieveSize.to!float).round.to!size_t;
+        const q = cast(size_t)((cast(double)SieveSize).sqrt);
 
-        while(factor < q)
+        while(factor <= q)
         {
-            // Semi-traditional style of a for each loop.
-            foreach(i; iota(factor, q, 2UL)) // every number from `factor` to `q`(exclusive), with a step of 2
+            if(this.getBit(factor))
             {
-                if(this.getBit(i))
+                factor += 2;
+                continue;
+            }
+        
+            enum LOOP_UNROLL_FACTOR = 64;
+            auto num = factor * factor;
+            while(num < SieveSize)
+            {
+                if(num + (factor * LOOP_UNROLL_FACTOR) < SieveSize)
                 {
-                    factor = i;
-                    break;
+                    static foreach(i; 0..LOOP_UNROLL_FACTOR / 2)
+                    {
+                        this.setBit(num);
+                        num += factor * 2;
+                    }
+                }
+                else
+                {
+                    this.setBit(num);
+                    num += factor * 2;
                 }
             }
-
-            // This is a more functional style of for each.
-            // Note that we create and pass a delegate/lambda into a _template_ parameter.
-            // This can allow D compilers to perform optimisations, including inlining.
-            iota(factor * 3, SieveSize, factor * 2)
-                .each!(num => this.clearBit(num));
 
             factor += 2;
         }
@@ -222,7 +233,7 @@ mixin template RunSieve()
         auto count = 1;
         foreach(num; iota(3, SieveSize, 2))
         {
-            if(this.getBit(num))
+            if(!this.getBit(num))
             {
                 if(showResults)
                     output.put(format!"%s, "(num)); // We can pass the format specification as a template parameter
@@ -264,7 +275,7 @@ mixin template RunSieve()
 // This is the faithful, runtime-based version of `SieveRT`
 final class SieveRT
 {
-    mixin CommonSieveFunctions;
+    mixin CommonSieveFunctions!8;
 
     private ubyte[] _bits;
     private size_t _sieveSize;
@@ -280,7 +291,6 @@ final class SieveRT
     this(size_t sieveSize)
     {
         this._bits.length = alignTo!8(sieveSize) / 8;
-        this._bits[] = ubyte.max;
         this._sieveSize = sieveSize;
     }
 
@@ -405,11 +415,11 @@ final class SieveRT_LookupTable(size_t SieveSize)
     }
 }
 
-final class SieveRT_8
+final class SieveRTBX(alias BitT)
 {
     mixin RunSieve; 
 
-    private bool[] _bits;
+    private BitT[] _bits;
     private size_t _sieveSize;
     private alias SieveSize = _sieveSize;
 
@@ -418,18 +428,17 @@ final class SieveRT_8
     this(size_t sieveSize)
     {
         this._bits.length = sieveSize/2;
-        this._bits[] = true;
         this._sieveSize = sieveSize;
     }
 
     private bool getBit(size_t index) nothrow inout
     {
-        return this._bits[index/2];
+        return this._bits[index/2] == 1;
     }
 
-    private void clearBit(size_t index) @nogc nothrow
+    private void setBit(size_t index) @nogc nothrow
     {
-        this._bits[index/2] = false;
+        this._bits[index/2] = 1;
     }
 
     private size_t countPrimes() nothrow inout
@@ -439,7 +448,7 @@ final class SieveRT_8
 
         // Slightly different way instead of using .count
         return iota(3, SieveSize, 2)
-                .map!(num => this.getBit(num))
+                .map!(num => !this.getBit(num))
                 .filter!(b => b)
                 .walkLength + 1;
     }
@@ -452,6 +461,38 @@ final class SieveRT_8
     }
 }
 
+final class SieveCT_MegaUnroll(size_t SieveSize)
+{
+    mixin CommonSieveFunctions!8;
+
+    private ubyte[alignTo!8(SieveSize) / 8] _bits;
+
+    bool validateResults() inout
+    {
+        return true;
+    }
+
+    void runSieve()
+    {
+        import std.algorithm : each;
+        import std.math      : sqrt, round;
+        import std.range     : iota;
+
+        const q = cast(size_t)((cast(double)SieveSize).sqrt);
+
+        static foreach(factor; iota(3, q, 2))
+        {
+            if(!this.getBit(factor))
+            {
+                static foreach(i; iota(factor * factor, SieveSize, factor * 2))
+                {
+                    this.setBit(i);
+                }
+            }
+        }
+    }
+}
+
 // What if we could... say... generate a string at compile time and then use that string as code?
 string generateSieveRT(alias BitType)()
 {
@@ -459,9 +500,9 @@ string generateSieveRT(alias BitType)()
 
     // q{} are token strings: Strings that must evaluate to D tokens.
     return format!q{
-    final class SieveRT_%s
+    final class SieveRTB1_%s
     {
-        mixin CommonSieveFunctions;
+        mixin CommonSieveFunctions!%s;
 
         private %s[] _bits;
         private size_t _sieveSize;
@@ -471,8 +512,7 @@ string generateSieveRT(alias BitType)()
 
         this(size_t sieveSize)
         {
-            this._bits.length = alignTo!8(sieveSize) / 8;
-            this._bits[] = ubyte.max;
+            this._bits.length = alignTo!%s(sieveSize) / %s;
             this._sieveSize = sieveSize;
         }
 
@@ -485,7 +525,10 @@ string generateSieveRT(alias BitType)()
     }
     }(
         BitType.sizeof * 8,
-        BitType.stringof
+        BitType.sizeof * 8,
+        BitType.stringof,
+        BitType.sizeof * 8,
+        BitType.sizeof * 8,
     );
 }
 mixin(generateSieveRT!ushort);
@@ -495,21 +538,38 @@ mixin(generateSieveRT!ulong);
 // ditto, but for running them!
 // But.. what if we got the format string from an external file first?
 immutable RUN_SIEVE_FORMAT = import("run_sieve.d"); // String import paths are relative to the /views/ folder.
-string generateSieveRTRunner(string Alias, alias BitType)()
+immutable RUN_SIEVE_LEADERBOARD_FORMAT = import("run_sieve_leaderboard.d");
+string generateSieveRTRunner(string Alias, alias BitType, bool UseLeaderboardVersion = false)()
 {
     import std.format : format;
 
     // Now, I didn't promise maintainable code, but I think I've snuck in the vast majority of D's cooler features.
     const bits = BitType.sizeof * 8;
-    return format!RUN_SIEVE_FORMAT(
-        Alias, bits,
-        Alias,
-        Alias, bits,
-        Alias, bits
-    );
+    
+    static if(UseLeaderboardVersion)
+    {
+        return format!RUN_SIEVE_LEADERBOARD_FORMAT(
+            Alias, bits,
+            Alias, 1,
+        );
+    }
+    else
+    {
+        return format!RUN_SIEVE_FORMAT(
+            Alias, bits,
+            Alias, 1,
+            Alias, 1,
+            Alias, 1
+        );
+    }
 }
 
-enum PRIME_COUNT = 1_000_000;
+version(Prime_100_000)
+    enum PRIME_COUNT = 100_000;
+else
+    enum PRIME_COUNT = 1_000_000;
+
+
 enum MAX_SECONDS = 5;
 
 import std.typecons : Flag, Yes, No;
@@ -553,9 +613,28 @@ void main(string[] args)
             runSingleThreaded!s2(IsFaithful.yes);
             runMultiThreaded!(s2, st)(Yes.faithful);
 
-            alias s3 = SieveRT_8;
+            alias s3 = SieveRTBX!ubyte;
             runSingleThreaded!s3(IsFaithful.yes, "base", 8);
-            runMultiThreaded!(s3, st)(IsFaithful.yes, "base", 8);
+
+            alias s4 = SieveRTCT_Cheatiness!PRIME_COUNT;
+            runMultiThreaded!(s4, st)(IsFaithful.no, "other", 1);
+
+            mixin(generateSieveRTRunner!("s5", ushort, true));
+            mixin(generateSieveRTRunner!("s6", uint, true));
+            mixin(generateSieveRTRunner!("s7", ulong, true));
+
+            alias s8 = SieveRTB1_32;
+            runMultiThreaded!(s8, st)(IsFaithful.yes, "base", 1); // 32 has the best performance on my machine, so I'll use that for the multithreaded leaderboard.
+
+            // This one is here just to have a "non-bool yet used as a bool" version there.
+            alias s9 = SieveRTBX!ulong;
+            runSingleThreaded!s9(IsFaithful.yes, "base", 64);
+
+            version(CompileUnrolled)
+            {
+                alias s10 = SieveCT_MegaUnroll!PRIME_COUNT;
+                runSingleThreaded!s10(IsFaithful.no);
+            }
             break;
 
         case all:
@@ -570,16 +649,16 @@ void main(string[] args)
             runMultiThreaded!(s2, dt)(Yes.faithful);
 
             alias s3 = SieveRTCT_Cheatiness!PRIME_COUNT;
-            runSingleThreaded!s3(IsFaithful.no & IsFaithful.no & IsFaithful.no, "other", 0);
-            runMultiThreaded!(s3, st)(IsFaithful.no, "other", 0);
-            runMultiThreaded!(s3, dt)(IsFaithful.no, "other", 0);
+            runSingleThreaded!s3(IsFaithful.no & IsFaithful.no & IsFaithful.no, "other", 1);
+            runMultiThreaded!(s3, st)(IsFaithful.no, "other", 1);
+            runMultiThreaded!(s3, dt)(IsFaithful.no, "other", 1);
 
             alias s4 = SieveRT_LookupTable!PRIME_COUNT;
             runSingleThreaded!s4(IsFaithful.no, "lookup", 1);
             runMultiThreaded!(s4, dt)(IsFaithful.no, "lookup", 1);
             runMultiThreaded!(s4, st)(IsFaithful.no, "lookup", 1);
 
-            alias s5 = SieveRT_8;
+            alias s5 = SieveRTBX!ubyte;
             runSingleThreaded!s5(IsFaithful.yes, "base", 8);
             runMultiThreaded!(s5, dt)(IsFaithful.yes, "base", 8);
             runMultiThreaded!(s5, st)(IsFaithful.yes, "base", 8);
@@ -587,6 +666,21 @@ void main(string[] args)
             mixin(generateSieveRTRunner!("s6", ushort));
             mixin(generateSieveRTRunner!("s7", uint));
             mixin(generateSieveRTRunner!("s8", ulong));
+
+            alias s9 = SieveRTBX!ushort;
+            runSingleThreaded!s9(IsFaithful.yes, "base", 16);
+            runMultiThreaded!(s9, dt)(IsFaithful.yes, "base", 16);
+            runMultiThreaded!(s9, st)(IsFaithful.yes, "base", 16);
+
+            alias s10 = SieveRTBX!ushort;
+            runSingleThreaded!s10(IsFaithful.yes, "base", 32);
+            runMultiThreaded!(s10, dt)(IsFaithful.yes, "base", 32);
+            runMultiThreaded!(s10, st)(IsFaithful.yes, "base", 32);
+
+            alias s11 = SieveRTBX!ushort;
+            runSingleThreaded!s11(IsFaithful.yes, "base", 64);
+            runMultiThreaded!(s11, dt)(IsFaithful.yes, "base", 64);
+            runMultiThreaded!(s11, st)(IsFaithful.yes, "base", 64);
             break;
     }
 }
@@ -625,7 +719,7 @@ void runSingleThreaded(alias SieveType)(IsFaithful faithful, string algorithm = 
         // #1: Using the `is()` expression on a concrete type.
         // #5: We can also execute some code to make it even more generic.
         static if(
-            /*#1*/ is(SieveType == SieveRT) || is(SieveType == SieveRT_8)
+            /*#1*/ is(SieveType == SieveRT) || is(SieveType == SieveRTBX!ubyte)
             /*#5*/ || __traits(identifier, SieveType).canFind("RT")
         )
             scope sieve = new SieveType(PRIME_COUNT);
@@ -646,7 +740,7 @@ void runSingleThreaded(alias SieveType)(IsFaithful faithful, string algorithm = 
     // A very brief attempt of explaining it is:
     //   "is SieveType a SieveCT with one template parameter Param1 where Param1 is a size_t?"
     //   (this also extracts the template parameter as `Param1` so you can evaluate it and use it for more shenanigans)
-    static if(is(SieveType == SieveCT!Param1, size_t Param1))
+    static if(is(SieveType == SieveCT!Param1, size_t Param1) || is(SieveType == SieveCT_MegaUnroll!Param1, size_t Param1))
         auto s = new SieveType();
     else
         auto s = new SieveType(PRIME_COUNT);
